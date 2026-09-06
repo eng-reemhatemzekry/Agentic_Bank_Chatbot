@@ -1,1 +1,131 @@
 # Agentic_Bank_Chatbot
+A secure, fully agentic banking chatbot built with **LangGraph**, **Ollama (Qwen2.5)**, and
+**Teradata** -- using the **single, official `teradata-mcp-server`** as its only tool source,
+including Teradata's real native **Vector Store** (`tdvs_*` tools) for FAQ RAG.
+
+1. General FAQ answering via Teradata's native Vector Store / RAG tools.
+2. "My own history" Q&A -- profile, own transactions, own products -- with database-enforced
+   isolation between customers, even though the agent has a generic SQL query tool.
+3. Fully agentic tool selection: the LLM decides which tool(s) to call, if any, purely from
+   the tools' names/descriptions via native function calling. No hand-written intent
+   classifier or topic-to-function lookup table anywhere in the pipeline.
+4. Multilingual by construction -- the system prompt instructs the model to always answer in
+   whatever language the customer just used.
+
+## Architecture
+
+```
+customer -> app.py (login) -> LangGraph pipeline -> teradata-mcp-server (ONE MCP server) -> Teradata
+                                     |
+                          input_guardrail -> agent <-> tools -> output_guardrail
+```
+
+See [`diagrams/architecture.mmd`](diagrams/architecture.mmd) and
+[`diagrams/agent_graph.mmd`](diagrams/agent_graph.mmd)
+
+### Project layout
+
+```
+banking_agentic_chatbot/
+├── app.py                          # CLI entrypoint: login + chat loop
+├── web_app.py                      # Gradio web UI: same pipeline, browser-based
+├── auth.py                         # Shared login/auth logic (used by both entrypoints)
+├── mcp_config.json                 # ONE MCP server: the official teradata-mcp-server
+├── requirements.txt
+├── .env.example
+├── db/
+│   ├── schema.sql                  # Tables, secure views, GRANT ... TO PUBLIC
+│   └── load_data.py                # Loads the 4 source files, provisions logins
+├── scripts/
+│   ├── apply_schema.py             # Cross-platform schema.sql runner (no BTEQ needed)
+│   └── setup_vector_store.py       # Creates the real Teradata Vector Store (tdvs_create)
+├── graph/
+│   ├── state.py
+│   ├── agent.py                    # Loads tools from teradata-mcp-server, binds to Qwen2.5
+│   ├── guardrails.py                # LLM-based input/output guardrail nodes
+│   └── build_graph.py               # StateGraph wiring + mermaid export
+├── diagrams/
+│   ├── agent_graph.mmd
+│   └── architecture.mmd
+└── docs/
+    └── security.md                 # Full threat model / defense-in-depth writeup
+```
+
+## Prerequisites
+
+* **Teradata Vantage** instance.
+* **`uv`** (Python tool runner, used to launch the official MCP server via `uvx`):
+  ```bash
+  pip install uv
+  ```
+* **Ollama** running locally with:
+  ```bash
+  ollama pull qwen2.5
+  ```
+* Python 3.11+.
+
+## Setup
+
+1. Create a virtual environment and install dependencies:
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate        # Windows: .venv\Scripts\activate
+   pip install -r requirements.txt
+   ```
+2. Copy `.env.example` to `.env` and fill in your Teradata admin credentials. Every script
+   calls `load_dotenv()` automatically -- no manual `export`/`$env:` needed.
+3. Put the four source files in a `data/` folder at the project root (the products/
+   transactions files are `.xlsx` content saved with a `.csv` extension -- `db/load_data.py`
+   handles that automatically).
+4. Create the schema:
+   ```bash
+   python scripts/apply_schema.py
+   ```
+5. Load data and provision per-customer logins:
+   ```bash
+   python db/load_data.py --source-dir ./data --provision-users
+   ```
+   This is resumable and auto-reconnects on connection drops -- if it stops partway, just
+   re-run the same command.
+6. Set up the FAQ Vector Store using the official server's real `tdvs_create` tool:
+   ```bash
+   python scripts/setup_vector_store.py
+   ```
+   This prints the live tool schema and attempts creation. **If your Teradata instance
+   doesn't support the native `VECTOR` type** (common on trial accounts even on version
+   20.0), this script tells you clearly -- see its docstring for two fallbacks that need no
+   vector math at all (letting the agent read the ~70-row `faqs` table directly) or the
+   legacy local-embeddings path (`python db/load_data.py --legacy-embed-faqs`).
+7. Run the chatbot -- either interface works against the exact same agentic pipeline:
+
+   **CLI:**
+   ```bash
+   python app.py
+   ```
+
+   **Web UI (Gradio):**
+   ```bash
+   python web_app.py
+   ```
+   Opens a local web server (prints a URL, usually http://127.0.0.1:7860) with a sign-in
+   form and chat window. Each browser session gets its own isolated graph + Teradata
+   connection (see the note at the top of `web_app.py`) -- safe for multiple customers to
+   use the same running server concurrently.
+
+   Either way, log in with a `customer_id` from `data/Synthetic_Bank_Customers.csv` and the
+   matching PIN from `db/customer_login_secrets.csv` (generated by step 5).
+
+## Regenerating the mermaid diagram from code
+
+```bash
+python -m graph.build_graph
+```
+
+## Notes on "no if condition / no lookup dictionaries"
+
+The only Python-level conditionals are `route_after_input_guardrail` (branches on the
+**guardrail LLM's own verdict**) and LangGraph's prebuilt `tools_condition` (the standard
+"does the last AI message contain tool calls?" check). Neither inspects the customer's
+message to decide *which* banking topic it's about or *which* tool to call -- that's 100%
+Qwen2.5's function-calling output in `graph/agent.py`, driven by the **live tool schemas
+reported by `teradata-mcp-server`** (never hardcoded here).
