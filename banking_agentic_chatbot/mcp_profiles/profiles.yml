@@ -1,0 +1,27 @@
+
+# =========================
+# The official teradata-mcp-server's built-in "all" profile loads EVERY module --
+# base, rag, table, quality (qlty_*), feature store (fs_*), DBA (dba_*), security
+# (sec_*), data-scientist, ML, plot, and BAR tools. That's dozens of tools with names
+# like dba_resusageSummary, dba_flowControl, dba_userDelay, dba_tableUsageImpact,
+# qlty_columnSummary, etc.
+#
+# Qwen2.5 (a small local model bound to ALL of those via native function calling, with
+# zero hand-written routing logic -- see graph/agent.py) was picking the wrong tool for
+# ordinary customer questions: "what is my balance" was matching DBA disk-space/usage
+# tools instead of the v_my_profile view, "my last 5 transactions" was matching a
+# DB-transaction-monitoring tool instead of v_my_transactions. The tool names shared
+# just enough banking-adjacent vocabulary ("balance", "space", "transaction", "usage")
+# to confuse tool selection over such a large, irrelevant tool surface.
+#
+# This chatbot only ever needs two things: generic read-only SQL (base_*) to query the
+# v_my_* views/faqs table, and the native Vector Store tools (tdvs_*) for FAQ RAG. This
+# profile restricts the server to exactly that, so the agent never even sees a DBA/
+# quality/feature-store/security/ML/plot/BAR tool to get confused by.
+banking:
+  tool:
+    - "base_*"    # base_readQuery, base_tableList, base_databaseList, etc.
+    - "tdvs_*"    # native Teradata Vector Store tools (tdvs_create, tdvs_similaritySearch, tdvs_ask, ...)
+  prompt:
+    - "base_*"
+  resource: []

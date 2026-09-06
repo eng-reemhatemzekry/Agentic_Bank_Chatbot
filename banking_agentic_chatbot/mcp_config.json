@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "teradata": {
+      "command": "uvx",
+      "args": ["teradata-mcp-server"],
+      "transport": "stdio",
+      "env": {
+        "DATABASE_URI": "teradata://${TD_SESSION_DB_USER}:${TD_SESSION_DB_PASSWORD}@${TD_HOST}:1025/amana_bank",
+        "MCP_TRANSPORT": "stdio",
+
+        "_comment_profile": "FIX: was '--profile all' (loads dba_*/qlty_*/fs_*/sec_*/ML/plot/BAR tools alongside base_*, which confused Qwen2.5's tool selection -- see mcp_profiles/profiles.yml for the full story). Now loads the custom 'banking' profile, which exposes ONLY base_* and tdvs_* tools. graph/agent.py injects CONFIG_DIR below with the absolute path to mcp_profiles/ at launch time -- do not hardcode a relative path here, it won't resolve correctly if the server is spawned with a different working directory.",
+        "PROFILE": "banking",
+        "CONFIG_DIR": "__INJECTED_AT_RUNTIME_BY_graph/agent.py__",
+
+        "_comment_disclosure": "Second line of defense on top of the narrowed profile: even a handful of tools is safer behind progressive disclosure, which exposes only 2 proxy tools (search_tool, execute_tool) to the LLM instead of listing every tool up front -- the LLM searches by keyword before calling anything.",
+        "PROGRESSIVE_DISCLOSURE": "true"
+      }
+    }
+  }
+}
